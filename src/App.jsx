@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Building2, 
   MapPin, 
@@ -12,14 +12,15 @@ import {
   User, 
   PlusCircle, 
   Printer, 
-  Navigation,
-  Calendar,
-  Sparkles,
-  CheckCircle2,
-  X
+  Calendar, 
+  Sparkles, 
+  CheckCircle2, 
+  X,
+  Loader2
 } from 'lucide-react';
-import { INITIAL_PROJECTS } from './data';
+import { supabase } from './supabase';
 
+// Haversine distance in km
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -31,30 +32,32 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return (R * c).toFixed(1);
+  return parseFloat((R * c).toFixed(1));
 }
 
 export default function App() {
-  const [projects, setProjects] = useState(INITIAL_PROJECTS);
-  const [selectedProject, setSelectedProject] = useState(INITIAL_PROJECTS[0]);
+  const [projects, setProjects] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const [activeStage, setActiveStage] = useState('all');
 
-  // Global Map Center State (Can be ANY location in India / Maharashtra)
+  // Map Center
   const [mapLocation, setMapLocation] = useState({
-    name: "Baramati, Pune District, Maharashtra",
+    name: "Baramati, Maharashtra",
     lat: 18.1512,
-    lon: 74.5885
+    lon: 74.5885,
+    cityDetected: "Baramati"
   });
 
-  // Modals & Panels
+  // Modals & Authentication
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showHelpdesk, setShowHelpdesk] = useState(false);
   const [showBuilderModal, setShowBuilderModal] = useState(false);
   const [showPassModal, setShowPassModal] = useState(false);
   const [shareSuccess, setShareSuccess] = useState(false);
 
-  // User State
   const [user, setUser] = useState(() => {
     const s = localStorage.getItem('bhoomi_user');
     return s ? JSON.parse(s) : null;
@@ -63,23 +66,74 @@ export default function App() {
   const [authPhone, setAuthPhone] = useState('');
   const [authRole, setAuthRole] = useState('buyer');
 
-  // Appointment Pass State
+  // Pass Booking
   const [buyerName, setBuyerName] = useState('');
   const [buyerPhone, setBuyerPhone] = useState('');
   const [visitDate, setVisitDate] = useState('');
   const [visitSlot, setVisitSlot] = useState('Morning (10:30 AM - 1:00 PM)');
   const [generatedPass, setGeneratedPass] = useState(null);
 
-  // GOOGLE MAPS STYLE GLOBAL ADDRESS SEARCH (ANY LOCATION)
+  // New Builder Project Form State
+  const [newProject, setNewProject] = useState({
+    title: '',
+    developer: '',
+    developer_phone: '',
+    signatory_name: '',
+    advocate_name: '',
+    city: 'Baramati',
+    corridor: 'Growth Corridor',
+    gat_no: '',
+    latitude: 18.1512,
+    longitude: 74.5885,
+    lifecycle_stage: 'ongoing',
+    stage_label: 'Ongoing (Plinth / Structure)',
+    category_label: 'Commercial + Residential',
+    market_rate: '₹3,400/sq.ft',
+    pre_launch_rate: '₹3,100/sq.ft',
+    ready_reckoner_rate: '₹2,800/sq.ft',
+    road_approach: '15m DP Road Frontage',
+    audit_id: 'MahaRERA: Application Submitted',
+    audit_status: 'Sanctioned layout & CC verified by project advocate.',
+    title_clearance_status: '30-Year Search Report Cleared'
+  });
+
+  // Query Supabase based on detected city
+  const fetchDatabaseProjects = async (city) => {
+    setLoading(true);
+    try {
+      let query = supabase.from('projects').select('*');
+      if (city && city.toLowerCase() !== 'all') {
+        query = query.ilike('city', `%${city}%`);
+      }
+      const { data, error } = await query;
+      if (error) {
+        console.error("Supabase Error:", error);
+      } else if (data) {
+        setProjects(data);
+        setSelectedProject(data.length > 0 ? data[0] : null);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDatabaseProjects(mapLocation.cityDetected);
+  }, [mapLocation.cityDetected]);
+
+  // Global OSM Nominatim search with city parser
   const handleGlobalSearch = async (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
 
-    setIsSearching(true);
+    setIsSearchingLocation(true);
     try {
-      // Free open worldwide geocoding API
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery + ', Maharashtra, India')}`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          searchQuery + ', Maharashtra, India'
+        )}`
       );
       const data = await res.json();
 
@@ -88,43 +142,53 @@ export default function App() {
         const newLat = parseFloat(place.lat);
         const newLon = parseFloat(place.lon);
 
+        let detected = searchQuery.trim();
+        const q = searchQuery.toLowerCase();
+        if (q.includes("pune") || q.includes("kharadi") || q.includes("hinjawadi") || q.includes("hadapsar") || q.includes("kothrud") || q.includes("wakad")) {
+          detected = "Pune";
+        } else if (q.includes("mumbai") || q.includes("bkc") || q.includes("sion") || q.includes("chembur") || q.includes("thane")) {
+          detected = "Mumbai";
+        } else if (q.includes("baramati") || q.includes("jalochi") || q.includes("bhigwan") || q.includes("midc")) {
+          detected = "Baramati";
+        }
+
         setMapLocation({
           name: place.display_name,
           lat: newLat,
-          lon: newLon
+          lon: newLon,
+          cityDetected: detected
         });
-
-        // Find if any listed project is near this searched location
-        const sorted = [...projects].sort((a, b) => {
-          return (
-            parseFloat(calculateDistance(newLat, newLon, a.latitude, a.longitude)) -
-            parseFloat(calculateDistance(newLat, newLon, b.latitude, b.longitude))
-          );
-        });
-        if (sorted.length > 0) {
-          setSelectedProject(sorted[0]);
-        }
       } else {
-        alert("Location not found on map. Try entering a nearby landmark, village, or town (e.g. 'Shivajinagar Pune' or 'Bhigwan').");
+        alert("Location not found on map.");
       }
     } catch (err) {
       console.error(err);
-      alert("Error finding location. Please check your internet connection.");
     } finally {
-      setIsSearching(false);
+      setIsSearchingLocation(false);
     }
   };
 
-  // Instant WhatsApp & Mobile Sharing
+  // Strict local filter: only show developments within 45 km radius
+  const visibleProjects = useMemo(() => {
+    return projects
+      .map((p) => ({
+        ...p,
+        distanceKm: calculateDistance(mapLocation.lat, mapLocation.lon, p.latitude, p.longitude)
+      }))
+      .filter((p) => {
+        const matchStage = activeStage === 'all' || p.lifecycle_stage === activeStage;
+        const matchProximity = p.distanceKm <= 45;
+        return matchStage && matchProximity;
+      })
+      .sort((a, b) => a.distanceKm - b.distanceKm);
+  }, [projects, mapLocation, activeStage]);
+
+  // WhatsApp / Share handler
   const handleShareLocation = () => {
-    const shareText = `*BhoomiRadar Verified Location*\n\n📍 *Place:* ${mapLocation.name}\n🌐 *Map Pin:* https://www.google.com/maps?q=${mapLocation.lat},${mapLocation.lon}\n\n🔍 Check direct developer rates & statutory approvals on BhoomiRadar:\n${window.location.href}`;
+    const shareText = `*BhoomiRadar Local Real Estate Intelligence*\n\n📍 *Area:* ${mapLocation.name}\n🗺️ *GPS Coordinates:* ${mapLocation.lat}, ${mapLocation.lon}\n\n🔍 Check direct developer rates & statutory approvals on BhoomiRadar:\n${window.location.href}`;
 
     if (navigator.share) {
-      navigator.share({
-        title: 'BhoomiRadar Property Location',
-        text: shareText,
-        url: window.location.href
-      }).catch(() => {});
+      navigator.share({ title: 'BhoomiRadar Projects', text: shareText, url: window.location.href }).catch(() => {});
     } else {
       window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, '_blank');
       setShareSuccess(true);
@@ -132,20 +196,28 @@ export default function App() {
     }
   };
 
-  // Auth Submit
-  const handleAuthSubmit = (e) => {
+  // Create Project in Supabase
+  const handleCreateProject = async (e) => {
     e.preventDefault();
-    const profile = { name: authName, phone: authPhone, role: authRole };
-    setUser(profile);
-    localStorage.setItem('bhoomi_user', JSON.stringify(profile));
-    setBuyerName(authName);
-    setBuyerPhone(authPhone);
-    setShowAuthModal(false);
+    const payload = {
+      ...newProject,
+      source: 'builder_verified'
+    };
+
+    const { error } = await supabase.from('projects').insert([payload]);
+    if (error) {
+      alert("Failed to insert project: " + error.message);
+    } else {
+      alert("Project registered successfully in Supabase!");
+      setShowBuilderModal(false);
+      fetchDatabaseProjects(newProject.city);
+    }
   };
 
   // Issue Pass
   const handleGeneratePass = (e) => {
     e.preventDefault();
+    if (!selectedProject) return;
     setGeneratedPass({
       passId: `BR-${Math.floor(100000 + Math.random() * 900000)}`,
       buyerName: buyerName || (user ? user.name : 'Direct Buyer'),
@@ -160,7 +232,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#070b12] text-slate-100 flex flex-col font-sans">
       
-      {/* Top Navbar with Global Location Search */}
+      {/* Top Navbar */}
       <header className="border-b border-slate-800 bg-[#0c1322] px-4 lg:px-8 py-3 sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Compass className="w-5 h-5 text-emerald-400" />
@@ -170,32 +242,35 @@ export default function App() {
           </span>
         </div>
 
-        {/* GOOGLE MAPS STYLE SEARCH BAR */}
+        {/* Global Search Bar */}
         <form onSubmit={handleGlobalSearch} className="flex-1 max-w-lg mx-2 relative">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3" />
           <input
             type="text"
-            placeholder="Type ANY city, area, or road (e.g. Pune, Jalochi, Hadapsar, MIDC)..."
+            placeholder="Search ANY place: 'Pune', 'Mumbai', 'Baramati'..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-9 pr-24 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500"
           />
           <button
             type="submit"
-            disabled={isSearching}
+            disabled={isSearchingLocation}
             className="absolute right-1 top-1 bottom-1 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold transition disabled:opacity-50"
           >
-            {isSearching ? 'Locating...' : 'Search Map'}
+            {isSearchingLocation ? 'Locating...' : 'Search Map'}
           </button>
         </form>
 
-        {/* User Account & Builder CTA */}
+        {/* User Account / Builder Registration */}
         <div className="flex items-center gap-2">
           {user ? (
             <div className="bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-lg text-xs flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
               <span className="font-semibold text-slate-200">{user.name}</span>
-              <button onClick={() => { setUser(null); localStorage.removeItem('bhoomi_user'); }} className="text-slate-500 hover:text-rose-400 ml-1 text-[10px]">
+              <button 
+                onClick={() => { setUser(null); localStorage.removeItem('bhoomi_user'); }} 
+                className="text-slate-500 hover:text-rose-400 ml-1 text-[10px]"
+              >
                 Logout
               </button>
             </div>
@@ -219,13 +294,13 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Screen */}
+      {/* Main Grid View */}
       <main className="flex-1 p-4 lg:p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6">
         
-        {/* LEFT COLUMN: Interactive Map & Searched Coordinates */}
+        {/* LEFT COLUMN: Map & Local Projects */}
         <section className="lg:col-span-5 flex flex-col gap-4">
           
-          {/* MAP DISPLAY BOX */}
+          {/* Map Viewer */}
           <div className="bg-[#0b1220] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
             <div className="p-3 bg-slate-900 border-b border-slate-800 flex justify-between items-center gap-2">
               <div className="flex items-center gap-1.5 truncate">
@@ -243,307 +318,381 @@ export default function App() {
               </button>
             </div>
 
-            {/* LIVE VISUAL INTERACTIVE MAP */}
-            <div className="w-full h-64 bg-slate-950 relative">
+            <div className="w-full h-60 bg-slate-950 relative">
               <iframe
-                title="BhoomiRadar Visual Geocoder"
+                title="BhoomiRadar Live Map"
                 width="100%"
                 height="100%"
                 frameBorder="0"
                 scrolling="no"
-                src={`https://www.openstreetmap.org/export/embed.html?bbox=${mapLocation.lon - 0.02}%2C${mapLocation.lat - 0.015}%2C${mapLocation.lon + 0.02}%2C${mapLocation.lat + 0.015}&layer=mapnik&marker=${mapLocation.lat}%2C${mapLocation.lon}`}
+                src={`https://www.openstreetmap.org/export/embed.html?bbox=${mapLocation.lon - 0.03}%2C${mapLocation.lat - 0.02}%2C${mapLocation.lon + 0.03}%2C${mapLocation.lat + 0.02}&layer=mapnik&marker=${mapLocation.lat}%2C${mapLocation.lon}`}
                 className="opacity-90 contrast-125"
               ></iframe>
-              <div className="absolute bottom-2 left-2 bg-slate-900/90 border border-slate-800 px-2 py-0.5 rounded text-[10px] text-slate-300 font-mono">
-                Lat: {mapLocation.lat.toFixed(4)}, Lon: {mapLocation.lon.toFixed(4)}
-              </div>
             </div>
           </div>
 
-          {/* Development Projects List */}
-          <div className="flex flex-col gap-3">
+          {/* Lifecycle Filter Tabs */}
+          <div className="flex flex-col gap-2.5">
             <div className="flex justify-between items-center">
               <span className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Ground Reality Projects ({projects.length})
+                Local Developments ({visibleProjects.length})
               </span>
-              <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                Direct Developer Access
-              </span>
+              {loading && (
+                <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Querying Database...
+                </span>
+              )}
             </div>
 
-            <div className="flex flex-col gap-2.5 overflow-y-auto max-h-[calc(100vh-480px)] pr-1">
-              {projects.map((proj) => {
-                const isSelected = selectedProject?.id === proj.id;
-                const distance = calculateDistance(mapLocation.lat, mapLocation.lon, proj.latitude, proj.longitude);
-                return (
-                  <div
-                    key={proj.id}
-                    onClick={() => {
-                      setSelectedProject(proj);
-                      setMapLocation({
-                        name: `${proj.title} (${proj.gatNo})`,
-                        lat: proj.latitude,
-                        lon: proj.longitude
-                      });
-                    }}
-                    className={`p-3.5 rounded-xl border transition cursor-pointer ${
-                      isSelected
-                        ? 'bg-slate-900 border-emerald-500 shadow-lg ring-1 ring-emerald-500/30'
-                        : 'bg-[#0b1220]/70 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex justify-between items-center mb-1">
-                      <span className="text-[10px] font-semibold text-slate-400">{proj.categoryLabel}</span>
-                      <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                        {distance} km away
-                      </span>
+            <div className="grid grid-cols-4 gap-1.5 p-1 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] font-bold">
+              <button
+                onClick={() => setActiveStage('all')}
+                className={`py-1.5 rounded-lg transition ${
+                  activeStage === 'all' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                All
+              </button>
+              <button
+                onClick={() => setActiveStage('upcoming')}
+                className={`py-1.5 rounded-lg transition ${
+                  activeStage === 'upcoming' ? 'bg-amber-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Upcoming
+              </button>
+              <button
+                onClick={() => setActiveStage('ongoing')}
+                className={`py-1.5 rounded-lg transition ${
+                  activeStage === 'ongoing' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Ongoing
+              </button>
+              <button
+                onClick={() => setActiveStage('completed')}
+                className={`py-1.5 rounded-lg transition ${
+                  activeStage === 'completed' ? 'bg-blue-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Existing
+              </button>
+            </div>
+
+            {/* List */}
+            <div className="flex flex-col gap-2.5 overflow-y-auto max-h-[calc(100vh-510px)] pr-1">
+              {visibleProjects.length === 0 ? (
+                <div className="p-6 text-center bg-slate-900/40 border border-slate-800 rounded-xl text-slate-400 text-xs">
+                  No local projects found within 45 km of this point in {mapLocation.cityDetected}. Use <strong>+ List Project</strong> to register one.
+                </div>
+              ) : (
+                visibleProjects.map((proj) => {
+                  const isSelected = selectedProject?.id === proj.id;
+                  return (
+                    <div
+                      key={proj.id}
+                      onClick={() => {
+                        setSelectedProject(proj);
+                        setMapLocation({
+                          name: `${proj.title} (${proj.gat_no})`,
+                          lat: proj.latitude,
+                          lon: proj.longitude,
+                          cityDetected: proj.city
+                        });
+                      }}
+                      className={`p-3.5 rounded-xl border transition cursor-pointer ${
+                        isSelected
+                          ? 'bg-slate-900 border-emerald-500 shadow-lg ring-1 ring-emerald-500/30'
+                          : 'bg-[#0b1220]/70 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-semibold text-slate-400">{proj.category_label}</span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                            proj.lifecycle_stage === 'upcoming'
+                              ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                              : proj.lifecycle_stage === 'ongoing'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                              : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                          }`}
+                        >
+                          {proj.stage_label}
+                        </span>
+                      </div>
+                      <h3 className="text-xs font-bold text-white">{proj.title}</h3>
+                      <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5 mb-2">
+                        <MapPin className="w-3 h-3 text-slate-500 shrink-0" />
+                        {proj.gat_no} • <strong className="text-slate-300">{proj.distanceKm} km away</strong>
+                      </p>
+                      <div className="flex justify-between items-center text-[10px] text-slate-400 pt-2 border-t border-slate-800/60">
+                        <span>Rate: <strong className="text-emerald-400">{proj.pre_launch_rate}</strong></span>
+                        <span className="text-slate-300 font-semibold">{proj.road_approach}</span>
+                      </div>
                     </div>
-                    <h3 className="text-xs font-bold text-white">{proj.title}</h3>
-                    <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5 mb-2">
-                      <MapPin className="w-3 h-3 text-slate-500" />
-                      {proj.gatNo}
-                    </p>
-                    <div className="flex justify-between items-center text-[10px] text-slate-400 pt-2 border-t border-slate-800/60">
-                      <span>Rate: <strong className="text-emerald-400">{proj.preLaunchDiscountRate}</strong></span>
-                      <span className="text-slate-300 font-semibold">{proj.roadApproach}</span>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
         </section>
 
-        {/* RIGHT COLUMN: Statutory Legal Dossier & Booking */}
-        <section className="lg:col-span-7 bg-[#0b1220] border border-slate-800 rounded-2xl p-5 lg:p-6 flex flex-col gap-5 shadow-2xl">
-          
-          <div className="flex justify-between items-start border-b border-slate-800 pb-4">
-            <div>
-              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
-                {selectedProject.categoryLabel}
-              </span>
-              <h1 className="text-xl font-black text-white mt-0.5">{selectedProject.title}</h1>
-              <p className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                <MapPin className="w-3.5 h-3.5 text-slate-500" />
-                {selectedProject.gatNo} • By <span className="text-slate-200 font-semibold">{selectedProject.developer}</span>
-              </p>
-            </div>
-            <div className="text-right">
-              <span className="text-[11px] text-slate-400 block">Completion Target</span>
-              <span className="text-xs font-bold text-emerald-400 flex items-center justify-end gap-1 mt-0.5">
-                <Calendar className="w-3.5 h-3.5" />
-                {selectedProject.completionTarget}
-              </span>
-            </div>
-          </div>
-
-          {/* Statutory Verification Box */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4">
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                Statutory Records Audit
-              </span>
-              <span className="text-[11px] font-mono text-slate-400">ID: {selectedProject.auditId}</span>
-            </div>
-            <p className="text-xs text-slate-300 leading-relaxed">{selectedProject.auditStatus}</p>
-            <div className="mt-2 text-[11px] text-slate-400 flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>Title Clearance: {selectedProject.titleClearanceStatus}</span>
-            </div>
-          </div>
-
-          {/* Rates */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-[10px] uppercase font-bold text-slate-500 block">Govt Ready Reckoner</span>
-              <span className="text-sm font-extrabold text-white mt-1 block">{selectedProject.readyReckonerRate}</span>
-            </div>
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-[10px] uppercase font-bold text-slate-500 block">Prevailing Market Rate</span>
-              <span className="text-sm font-extrabold text-emerald-400 mt-1 block">{selectedProject.marketRate}</span>
-            </div>
-            <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
-              <span className="text-[10px] uppercase font-bold text-slate-500 block">DP Road Frontage</span>
-              <span className="text-xs font-semibold text-slate-300 mt-1 block">{selectedProject.roadApproach}</span>
-            </div>
-          </div>
-
-          {/* Direct Desk Connection */}
-          <div className="mt-auto pt-4 border-t border-slate-800 flex flex-col gap-3">
-            <div className="flex justify-between items-center">
-              <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5" />
-                Zero Broker Fee Guarantee
-              </span>
-              <a
-                href={`https://wa.me/${selectedProject.developerDirectPhone}?text=${encodeURIComponent(
-                  `Hello, I am viewing ${selectedProject.title} on BhoomiRadar. I want direct site inspection details.`
-                )}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
-              >
-                <MessageCircle className="w-3.5 h-3.5" />
-                WhatsApp Direct Site Desk
-              </a>
-            </div>
-
-            {/* Visit Pass Booking Form */}
-            <form onSubmit={handleGeneratePass} className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                  Generate Direct Authorized Visit Pass
+        {/* RIGHT COLUMN: Selected Project Legal Dossier */}
+        {selectedProject ? (
+          <section className="lg:col-span-7 bg-[#0b1220] border border-slate-800 rounded-2xl p-5 lg:p-6 flex flex-col gap-5 shadow-2xl">
+            <div className="flex justify-between items-start border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
+                  {selectedProject.category_label}
                 </span>
-                <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                  Locked Rate: {selectedProject.preLaunchDiscountRate}
+                <h1 className="text-xl font-black text-white mt-1">{selectedProject.title}</h1>
+                <p className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5 text-slate-500" />
+                  {selectedProject.gat_no} • By <span className="text-slate-200 font-semibold">{selectedProject.developer}</span>
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="text-[11px] text-slate-400 block">Target Possession</span>
+                <span className="text-xs font-bold text-emerald-400 flex items-center justify-end gap-1 mt-0.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                  {selectedProject.completion_target}
                 </span>
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* Statutory Record */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  Statutory Records Audit
+                </span>
+                <span className="text-[11px] font-mono text-slate-400">ID: {selectedProject.audit_id}</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">{selectedProject.audit_status}</p>
+              <div className="mt-2 text-[11px] text-slate-400 flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>Title Clearance: {selectedProject.title_clearance_status}</span>
+              </div>
+            </div>
+
+            {/* Rates */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Govt Ready Reckoner</span>
+                <span className="text-sm font-extrabold text-white mt-1 block">{selectedProject.ready_reckoner_rate}</span>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Market Rate</span>
+                <span className="text-sm font-extrabold text-emerald-400 mt-1 block">{selectedProject.market_rate}</span>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-xl">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">Road Approach</span>
+                <span className="text-xs font-semibold text-slate-300 mt-1 block">{selectedProject.road_approach}</span>
+              </div>
+            </div>
+
+            {/* Booking Form */}
+            <div className="mt-auto pt-4 border-t border-slate-800 flex flex-col gap-3">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Direct Site Desk (Zero Middleman)
+                </span>
+                {selectedProject.developer_phone && (
+                  <a
+                    href={`https://wa.me/${selectedProject.developer_phone}?text=${encodeURIComponent(
+                      `Hello, I am reviewing ${selectedProject.title} on BhoomiRadar. I want direct site inspection details.`
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    WhatsApp Site Desk
+                  </a>
+                )}
+              </div>
+
+              <form onSubmit={handleGeneratePass} className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Direct Site Visit Pass
+                  </span>
+                  <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                    Locked Rate: {selectedProject.pre_launch_rate}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="Your Full Name"
+                    required
+                    value={buyerName}
+                    onChange={(e) => setBuyerName(e.target.value)}
+                    className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="10-Digit Mobile Number"
+                    required
+                    value={buyerPhone}
+                    onChange={(e) => setBuyerPhone(e.target.value)}
+                    className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="date"
+                    required
+                    value={visitDate}
+                    onChange={(e) => setVisitDate(e.target.value)}
+                    className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                  <select
+                    value={visitSlot}
+                    onChange={(e) => setVisitSlot(e.target.value)}
+                    className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white outline-none focus:border-emerald-500"
+                  >
+                    <option>Morning (10:30 AM - 1:00 PM)</option>
+                    <option>Afternoon (2:00 PM - 4:30 PM)</option>
+                    <option>Evening (5:00 PM - 7:00 PM)</option>
+                  </select>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs transition flex items-center justify-center gap-1.5"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  Issue Official Authorized Visit Pass (PDF)
+                </button>
+              </form>
+            </div>
+          </section>
+        ) : (
+          <section className="lg:col-span-7 bg-[#0b1220] border border-slate-800 rounded-2xl p-8 flex items-center justify-center text-slate-400 text-xs">
+            Select a project from the left feed or search another location.
+          </section>
+        )}
+      </main>
+
+      {/* Builder Modal */}
+      {showBuilderModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0b1220] border border-slate-800 rounded-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto text-xs">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-white">List Your Project (Direct Cloud DB)</h3>
+                <p className="text-slate-400">Stores directly to live Supabase registry for all buyers.</p>
+              </div>
+              <button onClick={() => setShowBuilderModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateProject} className="space-y-3">
+              <div>
+                <label className="text-slate-300 font-semibold block mb-1">Project Name</label>
                 <input
                   type="text"
-                  placeholder="Your Full Name"
                   required
-                  value={buyerName}
-                  onChange={(e) => setBuyerName(e.target.value)}
-                  className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
-                />
-                <input
-                  type="tel"
-                  placeholder="10-Digit Mobile Number"
-                  required
-                  value={buyerPhone}
-                  onChange={(e) => setBuyerPhone(e.target.value)}
-                  className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 outline-none focus:border-emerald-500"
+                  placeholder="e.g. Imperial Residency"
+                  value={newProject.title}
+                  onChange={(e) => setNewProject({ ...newProject, title: e.target.value })}
+                  className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <input
-                  type="date"
-                  required
-                  value={visitDate}
-                  onChange={(e) => setVisitDate(e.target.value)}
-                  className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white outline-none focus:border-emerald-500"
-                />
-                <select
-                  value={visitSlot}
-                  onChange={(e) => setVisitSlot(e.target.value)}
-                  className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white outline-none focus:border-emerald-500"
-                >
-                  <option>Morning (10:30 AM - 1:00 PM)</option>
-                  <option>Afternoon (2:00 PM - 4:30 PM)</option>
-                  <option>Evening (5:00 PM - 7:00 PM)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-slate-300 font-semibold block mb-1">Developer Firm</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Jagtap Developers"
+                    value={newProject.developer}
+                    onChange={(e) => setNewProject({ ...newProject, developer: e.target.value })}
+                    className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-semibold block mb-1">Direct Desk WhatsApp</label>
+                  <input
+                    type="tel"
+                    required
+                    placeholder="91XXXXXXXXXX"
+                    value={newProject.developer_phone}
+                    onChange={(e) => setNewProject({ ...newProject, developer_phone: e.target.value })}
+                    className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-slate-300 font-semibold block mb-1">City / Taluka</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Baramati, Pune, Mumbai"
+                    value={newProject.city}
+                    onChange={(e) => setNewProject({ ...newProject, city: e.target.value })}
+                    className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-semibold block mb-1">Gat / Survey Number</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Gat No. 142/2"
+                    value={newProject.gat_no}
+                    onChange={(e) => setNewProject({ ...newProject, gat_no: e.target.value })}
+                    className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-slate-300 font-semibold block mb-1">MahaRERA ID</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="P521000..."
+                    value={newProject.audit_id}
+                    onChange={(e) => setNewProject({ ...newProject, audit_id: e.target.value })}
+                    className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-semibold block mb-1">Pre-Launch Rate</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="₹3,200/sq.ft"
+                    value={newProject.pre_launch_rate}
+                    onChange={(e) => setNewProject({ ...newProject, pre_launch_rate: e.target.value })}
+                    className="w-full p-2 bg-slate-900 border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
               </div>
 
               <button
                 type="submit"
-                className="w-full py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs transition flex items-center justify-center gap-1.5"
+                className="w-full py-2.5 mt-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg transition"
               >
-                <Printer className="w-3.5 h-3.5" />
-                Issue Official Authorized Visit Pass (PDF)
-              </button>
-            </form>
-          </div>
-        </section>
-      </main>
-
-      {/* FLOATING HELPDESK WIDGET */}
-      <div className="fixed bottom-5 right-5 z-40">
-        <button
-          onClick={() => setShowHelpdesk(!showHelpdesk)}
-          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 p-3.5 rounded-full shadow-2xl flex items-center gap-2 font-bold text-xs transition"
-        >
-          <HelpCircle className="w-5 h-5" />
-          <span className="hidden sm:inline">Helpdesk</span>
-        </button>
-
-        {showHelpdesk && (
-          <div className="absolute bottom-14 right-0 w-72 bg-[#0b1220] border border-slate-800 rounded-xl shadow-2xl p-4 text-xs space-y-3">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-              <span className="font-bold text-white flex items-center gap-1">
-                <HelpCircle className="w-3.5 h-3.5 text-emerald-400" />
-                Support & Helpdesk
-              </span>
-              <button onClick={() => setShowHelpdesk(false)} className="text-slate-400 hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-[11px] text-slate-400">
-              Need title report clarification or want to report a fake Gat listing? Contact our ground verification desk:
-            </p>
-            <a
-              href="https://wa.me/919822012345?text=Hello%20BhoomiRadar%20Support,%20I%20need%20help."
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg flex items-center justify-center gap-1.5 transition block text-center"
-            >
-              <MessageCircle className="w-4 h-4" />
-              Chat on WhatsApp
-            </a>
-          </div>
-        )}
-      </div>
-
-      {/* USER LOGIN MODAL */}
-      {showAuthModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#0b1220] border border-slate-800 rounded-2xl max-w-sm w-full p-6 text-xs relative">
-            <button onClick={() => setShowAuthModal(false)} className="absolute right-4 top-4 text-slate-400 hover:text-white">
-              <X className="w-5 h-5" />
-            </button>
-            <h3 className="text-base font-bold text-white mb-3">Sign In to BhoomiRadar</h3>
-            <form onSubmit={handleAuthSubmit} className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAuthRole('buyer')}
-                  className={`py-2 rounded font-bold border ${authRole === 'buyer' ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-400'}`}
-                >
-                  Buyer / Investor
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAuthRole('builder')}
-                  className={`py-2 rounded font-bold border ${authRole === 'builder' ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-400'}`}
-                >
-                  Builder / Landowner
-                </button>
-              </div>
-              <div>
-                <label className="text-slate-300 block mb-1">Full Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Your Name"
-                  value={authName}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  className="w-full p-2 bg-slate-900 border border-slate-800 rounded text-white"
-                />
-              </div>
-              <div>
-                <label className="text-slate-300 block mb-1">Mobile Number</label>
-                <input
-                  type="tel"
-                  required
-                  placeholder="10-Digit Mobile"
-                  value={authPhone}
-                  onChange={(e) => setAuthPhone(e.target.value)}
-                  className="w-full p-2 bg-slate-900 border border-slate-800 rounded text-white"
-                />
-              </div>
-              <button type="submit" className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded transition">
-                Continue
+                Save Project to Cloud Database
               </button>
             </form>
           </div>
         </div>
       )}
 
-      {/* PRINTABLE PASS MODAL */}
+      {/* Printable Visit Pass Modal */}
       {showPassModal && generatedPass && (
         <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white text-slate-900 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative max-h-[95vh] overflow-y-auto">
@@ -597,28 +746,20 @@ export default function App() {
                 </div>
                 <div className="flex justify-between border-b border-slate-200 py-1">
                   <span className="text-slate-500">Location:</span>
-                  <span className="font-bold text-slate-900">{generatedPass.project.gatNo}</span>
+                  <span className="font-bold text-slate-900">{generatedPass.project.gat_no}</span>
                 </div>
                 <div className="flex justify-between border-b border-slate-200 py-1">
                   <span className="text-slate-500">MahaRERA:</span>
-                  <span className="font-mono font-bold text-slate-800">{generatedPass.project.auditId}</span>
-                </div>
-                <div className="flex justify-between border-b border-slate-200 py-1">
-                  <span className="text-slate-500">Advocate Title Report:</span>
-                  <span className="font-bold text-emerald-800">{generatedPass.project.advocateName}</span>
+                  <span className="font-mono font-bold text-slate-800">{generatedPass.project.audit_id}</span>
                 </div>
               </div>
 
               <div className="bg-emerald-50 border-2 border-dashed border-emerald-400 p-3 rounded-lg text-center">
                 <span className="text-[10px] font-black uppercase text-emerald-900 block">48-Hour Rate Lock Guarantee</span>
                 <p className="text-xs text-emerald-950 mt-0.5">
-                  Pre-launch rate of <strong className="font-bold">{generatedPass.project.preLaunchDiscountRate}</strong> locked for this visit.
+                  Pre-launch rate of <strong className="font-bold">{generatedPass.project.pre_launch_rate}</strong> locked for this visit.
                 </p>
               </div>
-
-              <p className="text-[8px] text-slate-500 leading-tight pt-2">
-                <strong>Statutory Notice:</strong> BhoomiRadar operates strictly as an intermediary under Section 79 of the IT Act. All approvals are verified against promoter disclosures.
-              </p>
             </div>
           </div>
         </div>
